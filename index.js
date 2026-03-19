@@ -1,4 +1,4 @@
-const { REST, Routes, Client, GatewayIntentBits, Events } = require('discord.js');
+const { REST, Routes, Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const fs = require('fs');
 const client = new Client({ intents: [
     GatewayIntentBits.Guilds, 
@@ -9,7 +9,7 @@ const client = new Client({ intents: [
     GatewayIntentBits.GuildMessageReactions] });
 
 /* File Paths */
-const BLACKLIST_FILE_PATH = './jsons/whitelisted-ids.json';
+const WHITELIST_FILE_PATH = './jsons/whitelisted-ids.json';
 
 /* Command Imports */
 const config = require('./config.json');
@@ -25,16 +25,25 @@ const WHITELIST_CMD = 'whitelist';
 /* All Versions of Twitter Links */
 const TWITTER_LINK = 'https://twitter.com/';
 const X_LINK = 'https://x.com/';
-const FXTWITTER_LINK = 'https://fxtwitter.com/';
+const EMBEDDED_TWITTER_LINK = 'https://fxtwitter.com/';
 const SPACES_LINK_SEGMENT = '/i/spaces';
 const TWITTER_LINK_REGEX = /https:\/\/twitter\.com\//;
 const X_LINK_REGEX = /https:\/\/x\.com\//;
 const FULL_MODIFIED_LINK_REGEX = /(https:\/\/fxtwitter\.com\/\S+\/\d+)|(\|\|\s*https:\/\/fxtwitter\.com\/\S+\/\d+(\?s=+\d+\s*)*\|\|)/gm;
 const TWITTER_LINK_WITH_SPOILER_REGEX = /\|\|\s*https:\/\/twitter\.com\/.*\|\|/
 const X_LINK_WITH_SPOILER_REGEX = /\|\|\s*https:\/\/x\.com\/.*\|\|/
+const FULL_MODIFIED_SPOILERED_LINK_REGEX = /(\|\|\s*https:\/\/fxtwitter\.com\/\S+\/\d+(\?s=+\d+\s*)*\|\|)/
 
-/** A list of strings that represent blacklisted IDs */
-var whitelistedUsers = require(BLACKLIST_FILE_PATH).flatMap(val => val);
+const PIXIV_LINK = 'https://www.pixiv.net/';
+const PHIXIV_LINK = 'https://www.phixiv.net/';
+const PIXIV_LINK_REGEX = /https:\/\/www.pixiv\.net\//;
+const PIXIV_LINK_WITH_SPOILER_REGEX = /\|\|\s*https:\/\/pixiv\.net.*\|\|/
+const FULL_MODIFIED_PIXIV_LINK_REGEX = /(https:\/\/www.phixiv\.net\/\S+\/\d+)|(\|\|\s*https:\/\/www.phixiv\.net\/\S+\/\d+\|\|)/gm;
+
+/** A list of strings that represent whitelisted IDs */
+var whitelistedUsers = [];
+/** A list of strings that represent the IDs of misbehaving server members */
+var misbehavingUsers = [];
 
 const rest = new REST({ version: '10' }).setToken(config.BOT_TOKEN);
 
@@ -45,38 +54,30 @@ client.on(Events.ClientReady, () => {
     init(client.application.commands, BLACKLIST_CMD, WHITELIST_CMD);
     client.user.setActivity('Fixing Twitter Links');
     console.log('Successfully started');
+    whitelistedUsers = returnStringifiedListFromJSONFile(WHITELIST_FILE_PATH);
+    console.log('Loaded whitelisted user IDs with ' + whitelistedUsers.length + ' IDs');
 });
 
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || message.webhookId != null || !whitelistedUsers.some(value => value === message.author.id) || message.content.includes(SPACES_LINK_SEGMENT)) {
         return;
     }
-    const IS_TWITTER_LINK = TWITTER_LINK_REGEX.test(message.content);
-    const IS_X_LINK = X_LINK_REGEX.test(message.content);
-    if (IS_TWITTER_LINK || IS_X_LINK) {
-        const BASE_LINK = IS_TWITTER_LINK ? TWITTER_LINK : X_LINK;
-        var messageContent = message.content;
-        var hasSpoiler = TWITTER_LINK_WITH_SPOILER_REGEX.test(messageContent) || X_LINK_WITH_SPOILER_REGEX.test(messageContent);
-        do {
-            messageContent = messageContent.replace(BASE_LINK, FXTWITTER_LINK);
-        } while (messageContent.includes(BASE_LINK));
-        messageContent
-            .match(FULL_MODIFIED_LINK_REGEX)
-            ?.forEach(messageContentMatch => {
-                if (hasSpoiler) {
-                    messageContentMatch = '||' + messageContentMatch + '||';
-                }
-                message
-                    .reply({ content: messageContentMatch, allowedMentions: { repliedUser: false }})
-                    .catch((error) => console.log(error.message));
-                message.suppressEmbeds();
-            });
-    }    
+    const isMisbehavingUser = misbehavingUsers.includes(message.author.id);
+    const isTwitterLink = TWITTER_LINK_REGEX.test(message.content);
+    const isXLink = X_LINK_REGEX.test(message.content);
+    const isPixivLink = PIXIV_LINK_REGEX.test(message.content);
+    if (isTwitterLink || isXLink) {
+        handleTwitterLinkMessage(message, isTwitterLink, isMisbehavingUser);
+    } else if (isPixivLink) {
+        handlePixivLinkMessage(message, isMisbehavingUser);
+    } else if (isMisbehavingUser && message.attachments.size > 0) {
+        handleMisbehavingUserMessage(message);
+    }
 });
 
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (reaction.emoji.name === '❌') {
-        deleteMessage(reaction, user, config.APPLICATION_ID);
+       await deleteMessage(reaction, user, config.APPLICATION_ID);
     }
 });
 
@@ -84,20 +85,77 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isCommand()) {
         return;
     }
-    (updateWhitelist(interaction)).then(() => {
-        whitelistedUsers = returnValueFromFile(BLACKLIST_FILE_PATH);
+    await updateWhitelist(interaction).then(() => {
+        whitelistedUsers = returnStringifiedListFromJSONFile(WHITELIST_FILE_PATH);
     });
-    return;
 });
 
+function handleTwitterLinkMessage(message, isTwitterLink, isMisbehavingUser) {
+    const BASE_LINK = isTwitterLink ? TWITTER_LINK : X_LINK;
+    var messageContent = message.content;
+    while (messageContent.includes(BASE_LINK)) {
+         messageContent = messageContent.replace(BASE_LINK, EMBEDDED_TWITTER_LINK);
+    }
+    messageContent
+        .match(FULL_MODIFIED_LINK_REGEX)
+        ?.forEach(messageContentMatch => {
+            message.suppressEmbeds()
+                   .then(() => {
+                        if (isMisbehavingUser) {
+                            messageContentMatch = '||' + messageContentMatch + '||';
+                        }
+                        message.reply({ content: messageContentMatch, allowedMentions: { repliedUser: false } })
+                               .catch((error) => console.log(error.message));
+            });
+            message.suppressEmbeds();
+        });
+}
+
+function handlePixivLinkMessage(message, isMisbehavingUser) {
+    var messageContent = message.content;
+    var hasSpoiler = PIXIV_LINK_WITH_SPOILER_REGEX.test(messageContent);
+    while (messageContent.includes(PIXIV_LINK)) {
+         messageContent = messageContent.replace(PIXIV_LINK, PHIXIV_LINK);
+    }
+    messageContent
+        .match(FULL_MODIFIED_PIXIV_LINK_REGEX)
+        ?.forEach(messageContentMatch => {
+            message.suppressEmbeds()
+                   .then(() => {
+                        if (hasSpoiler || isMisbehavingUser) {
+                            messageContentMatch = '||' + messageContentMatch + '||';
+                        }
+                        message.reply({ content: messageContentMatch, allowedMentions: { repliedUser: false } })
+                               .catch((error) => console.log(error.message));
+            });
+            // To ensure that we still suppress the embed even if the first request gets denied
+            message.suppressEmbeds();
+        });
+}
+
+function handleMisbehavingUserMessage(message) {
+    var response = message.author.username + ' 💬: ' + message.content + ' \n';
+    var matchCount = 0;
+    message.attachments
+        ?.forEach(attachment => {
+            response = response + '||' + attachment.url + '|| \n';
+            matchCount++;
+        });
+    message.reply({ content: response, allowedMentions: { repliedUser: false } })
+        .catch((error) => console.log(error.message));
+    const baseTimeoutMs = 300;
+    var timeoutMs = (baseTimeoutMs - (baseTimeoutMs / matchCount)) * matchCount;
+    setTimeout(() => message.delete(), matchCount > 1 ? timeoutMs : baseTimeoutMs);
+}
+
 async function updateWhitelist(interaction) {
-    if (interaction.commandName === BLACKLIST_CMD) {
-        await blacklist(whitelistedUsers, fs, interaction, BLACKLIST_FILE_PATH);
+    if (interaction.commandName === BLACKLIST_CMD && !misbehavingUsers.includes(interaction.user.id)) {
+        await blacklist(whitelistedUsers, fs, interaction, WHITELIST_FILE_PATH);
     } else if (interaction.commandName === WHITELIST_CMD) {
-        await whitelist(whitelistedUsers, fs, interaction, BLACKLIST_FILE_PATH);
+        await whitelist(whitelistedUsers, fs, interaction, WHITELIST_FILE_PATH);
     }    
 }
 
-function returnValueFromFile(fileName) {
-    return JSON.parse(fs.readFileSync(fileName));
+function returnStringifiedListFromJSONFile(fileName) {
+    return JSON.parse(fs.readFileSync(fileName)).flatMap(val => val);
 }
