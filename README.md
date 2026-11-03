@@ -1,6 +1,6 @@
 ## What This is
 
-A Discord bot that fixes Twitter/X links you post by replying to your message and replacing them with fxtwitter while removing the embed from your own.
+A Discord bot that fixes Twitter/X and Pixiv links you post by replying to your message and replacing them with fxtwitter/phixiv while removing the embed from your own.
 
 You can use `/whitelist` command to opt in and the `/blacklist` command to opt back out of this bot replying to your messages.
 
