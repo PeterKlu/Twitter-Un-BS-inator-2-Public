@@ -1,4 +1,4 @@
-const { REST, Routes, Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const { REST, Routes, Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder, MessageFlagsBitField } = require('discord.js');
 const fs = require('fs');
 const client = new Client({ intents: [
     GatewayIntentBits.Guilds, 
@@ -26,24 +26,21 @@ const WHITELIST_CMD = 'whitelist';
 const TWITTER_LINK = 'https://twitter.com/';
 const X_LINK = 'https://x.com/';
 const EMBEDDED_TWITTER_LINK = 'https://fxtwitter.com/';
+const ENGLISH_EXTENSION = '/en';
 const SPACES_LINK_SEGMENT = '/i/spaces';
 const TWITTER_LINK_REGEX = /https:\/\/twitter\.com\//;
 const X_LINK_REGEX = /https:\/\/x\.com\//;
-const FULL_MODIFIED_LINK_REGEX = /(https:\/\/fxtwitter\.com\/\S+\/\d+)|(\|\|\s*https:\/\/fxtwitter\.com\/\S+\/\d+(\?s=+\d+\s*)*\|\|)/gm;
-const TWITTER_LINK_WITH_SPOILER_REGEX = /\|\|\s*https:\/\/twitter\.com\/.*\|\|/
-const X_LINK_WITH_SPOILER_REGEX = /\|\|\s*https:\/\/x\.com\/.*\|\|/
-const FULL_MODIFIED_SPOILERED_LINK_REGEX = /(\|\|\s*https:\/\/fxtwitter\.com\/\S+\/\d+(\?s=+\d+\s*)*\|\|)/
+const MODIFIED_TWITTER_LINK_REGEX = /https:\/\/fxtwitter\.com\/\S+\/\d+/g;
+const SPOILER_REGEX = /\|\|[\s\S]+?\|\|/g;
 
+/* All Versions of Pixiv Links */
 const PIXIV_LINK = 'https://www.pixiv.net/';
 const PHIXIV_LINK = 'https://www.phixiv.net/';
 const PIXIV_LINK_REGEX = /https:\/\/www.pixiv\.net\//;
-const PIXIV_LINK_WITH_SPOILER_REGEX = /\|\|\s*https:\/\/pixiv\.net.*\|\|/
 const FULL_MODIFIED_PIXIV_LINK_REGEX = /(https:\/\/www.phixiv\.net\/\S+\/\d+)|(\|\|\s*https:\/\/www.phixiv\.net\/\S+\/\d+\|\|)/gm;
 
 /** A list of strings that represent whitelisted IDs */
 var whitelistedUsers = [];
-/** A list of strings that represent the IDs of misbehaving server members */
-var misbehavingUsers = [];
 
 const rest = new REST({ version: '10' }).setToken(config.BOT_TOKEN);
 
@@ -62,17 +59,27 @@ client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || message.webhookId != null || !whitelistedUsers.some(value => value === message.author.id) || message.content.includes(SPACES_LINK_SEGMENT)) {
         return;
     }
-    const isMisbehavingUser = misbehavingUsers.includes(message.author.id);
     const isTwitterLink = TWITTER_LINK_REGEX.test(message.content);
     const isXLink = X_LINK_REGEX.test(message.content);
     const isPixivLink = PIXIV_LINK_REGEX.test(message.content);
     if (isTwitterLink || isXLink) {
-        handleTwitterLinkMessage(message, isTwitterLink, isMisbehavingUser);
+        handleTwitterLinkMessage(message, isTwitterLink);
     } else if (isPixivLink) {
-        handlePixivLinkMessage(message, isMisbehavingUser);
-    } else if (isMisbehavingUser && message.attachments.size > 0) {
-        handleMisbehavingUserMessage(message);
+        handlePixivLinkMessage(message);
     }
+});
+
+client.on(Events.MessageDelete, async (message) => {
+  if (!message.channel) {
+    return;
+  }
+  const fetched = await message.channel.messages.fetch({ limit: 100 });
+  const botReplies = fetched.filter(reply => reply.author.id === client.user.id && reply.reference?.messageId === message.id);
+  for (const [, reply] of botReplies) {
+    if (reply.deletable) {
+        await reply.delete().catch(error => console.log(error.message));
+    }
+  }
 });
 
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
@@ -85,75 +92,80 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isCommand()) {
         return;
     }
-    await updateWhitelist(interaction).then(() => {
-        whitelistedUsers = returnStringifiedListFromJSONFile(WHITELIST_FILE_PATH);
-    });
+    await updateWhitelist(interaction).then(() => whitelistedUsers = returnStringifiedListFromJSONFile(WHITELIST_FILE_PATH));
 });
 
-function handleTwitterLinkMessage(message, isTwitterLink, isMisbehavingUser) {
+function handleTwitterLinkMessage(message, isTwitterLink) {
     const BASE_LINK = isTwitterLink ? TWITTER_LINK : X_LINK;
-    var messageContent = message.content;
-    while (messageContent.includes(BASE_LINK)) {
-         messageContent = messageContent.replace(BASE_LINK, EMBEDDED_TWITTER_LINK);
-    }
-    messageContent
-        .match(FULL_MODIFIED_LINK_REGEX)
-        ?.forEach(messageContentMatch => {
-            message.suppressEmbeds()
-                   .then(() => {
-                        if (isMisbehavingUser) {
-                            messageContentMatch = '||' + messageContentMatch + '||';
-                        }
-                        message.reply({ content: messageContentMatch, allowedMentions: { repliedUser: false } })
-                               .catch((error) => console.log(error.message));
-            });
-            message.suppressEmbeds();
-        });
+    var messageContent = replaceMessageContent(message, BASE_LINK, EMBEDDED_TWITTER_LINK);
+    matchAndReplyToMessage(message, messageContent, MODIFIED_TWITTER_LINK_REGEX);
 }
 
-function handlePixivLinkMessage(message, isMisbehavingUser) {
-    var messageContent = message.content;
-    var hasSpoiler = PIXIV_LINK_WITH_SPOILER_REGEX.test(messageContent);
-    while (messageContent.includes(PIXIV_LINK)) {
-         messageContent = messageContent.replace(PIXIV_LINK, PHIXIV_LINK);
-    }
-    messageContent
-        .match(FULL_MODIFIED_PIXIV_LINK_REGEX)
-        ?.forEach(messageContentMatch => {
-            message.suppressEmbeds()
-                   .then(() => {
-                        if (hasSpoiler || isMisbehavingUser) {
-                            messageContentMatch = '||' + messageContentMatch + '||';
-                        }
-                        message.reply({ content: messageContentMatch, allowedMentions: { repliedUser: false } })
-                               .catch((error) => console.log(error.message));
-            });
-            // To ensure that we still suppress the embed even if the first request gets denied
-            message.suppressEmbeds();
-        });
+function handlePixivLinkMessage(message) {
+    matchAndReplyToMessage(
+        message, 
+        replaceMessageContent(message, PIXIV_LINK, PHIXIV_LINK),
+        FULL_MODIFIED_PIXIV_LINK_REGEX
+    );
 }
 
-function handleMisbehavingUserMessage(message) {
-    var response = message.author.username + ' 💬: ' + message.content + ' \n';
-    var matchCount = 0;
-    message.attachments
-        ?.forEach(attachment => {
-            response = response + '||' + attachment.url + '|| \n';
-            matchCount++;
-        });
-    message.reply({ content: response, allowedMentions: { repliedUser: false } })
-        .catch((error) => console.log(error.message));
-    const baseTimeoutMs = 300;
-    var timeoutMs = (baseTimeoutMs - (baseTimeoutMs / matchCount)) * matchCount;
-    setTimeout(() => message.delete(), matchCount > 1 ? timeoutMs : baseTimeoutMs);
+function replaceMessageContent(message, replacedRegex, replacingRegex) {
+    var messageContent = message.content;
+    while (messageContent.includes(replacedRegex)) {
+        messageContent = messageContent.replace(replacedRegex, replacingRegex);
+    }
+    console.log(messageContent);
+    return messageContent;
+}
+
+function matchAndReplyToMessage(message, messageContent, modifiedLinkRegex) {
+    const spoilerRanges = getSpoilerRanges(messageContent);
+    const addEnglish = messageContent.endsWith(ENGLISH_EXTENSION);
+    const replies = [];
+    const spoileredReplies = [];
+
+    for (const match of messageContent.matchAll(modifiedLinkRegex)) {
+        let reply = match[0];
+        if (modifiedLinkRegex == MODIFIED_TWITTER_LINK_REGEX && addEnglish) {
+            reply += ENGLISH_EXTENSION;
+        }
+        if (isInsideSpoiler(spoilerRanges, match.index, match.index + match[0].length)) {
+            spoileredReplies.push(`||${reply}||`);
+        } else {
+            replies.push(reply);
+        }
+    }
+
+    if (replies.length > 0 || spoileredReplies.length > 0) {
+        message.suppressEmbeds().catch(error => console.log(error.message));
+    }
+
+    for (const group of [replies, spoileredReplies]) {
+        if (group.length === 0) continue;
+        message.reply({ content: group.join('\n'), allowedMentions: { repliedUser: false } })
+               .catch(error => console.log(error.message));
+    }
+
+    setTimeout(() => {
+        message.suppressEmbeds().catch(error => console.log(error.message));
+    }, 3000);
 }
 
 async function updateWhitelist(interaction) {
-    if (interaction.commandName === BLACKLIST_CMD && !misbehavingUsers.includes(interaction.user.id)) {
+    if (interaction.commandName === BLACKLIST_CMD) {
         await blacklist(whitelistedUsers, fs, interaction, WHITELIST_FILE_PATH);
     } else if (interaction.commandName === WHITELIST_CMD) {
         await whitelist(whitelistedUsers, fs, interaction, WHITELIST_FILE_PATH);
     }    
+}
+
+function getSpoilerRanges(content) {
+    return [...content.matchAll(SPOILER_REGEX)]
+        .map(m => [m.index, m.index + m[0].length]);
+}
+
+function isInsideSpoiler(ranges, start, end) {
+    return ranges.some(([spoilerStart, spoilerEnd]) => start >= spoilerStart && end <= spoilerEnd);
 }
 
 function returnStringifiedListFromJSONFile(fileName) {
