@@ -1,11 +1,10 @@
 const { REST, Routes, Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder, MessageFlagsBitField } = require('discord.js');
 const fs = require('fs');
 const client = new Client({ intents: [
-    GatewayIntentBits.Guilds, 
+    GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages, 
-    GatewayIntentBits.MessageContent, 
-    GatewayIntentBits.GuildMembers, 
-    GatewayIntentBits.GuildEmojisAndStickers,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildExpressions,
     GatewayIntentBits.GuildMessageReactions] });
 
 /* File Paths */
@@ -114,19 +113,20 @@ function replaceMessageContent(message, replacedRegex, replacingRegex) {
     while (messageContent.includes(replacedRegex)) {
         messageContent = messageContent.replace(replacedRegex, replacingRegex);
     }
-    console.log(messageContent);
     return messageContent;
 }
 
 function matchAndReplyToMessage(message, messageContent, modifiedLinkRegex) {
     const spoilerRanges = getSpoilerRanges(messageContent);
-    const addEnglish = messageContent.endsWith(ENGLISH_EXTENSION);
+    const addEnglish = modifiedLinkRegex == MODIFIED_TWITTER_LINK_REGEX && messageContent.endsWith(ENGLISH_EXTENSION);
     const replies = [];
     const spoileredReplies = [];
+    
+    message.suppressEmbeds().catch(error => console.log(error.message));
 
     for (const match of messageContent.matchAll(modifiedLinkRegex)) {
         let reply = match[0];
-        if (modifiedLinkRegex == MODIFIED_TWITTER_LINK_REGEX && addEnglish) {
+        if (addEnglish) {
             reply += ENGLISH_EXTENSION;
         }
         if (isInsideSpoiler(spoilerRanges, match.index, match.index + match[0].length)) {
@@ -134,10 +134,6 @@ function matchAndReplyToMessage(message, messageContent, modifiedLinkRegex) {
         } else {
             replies.push(reply);
         }
-    }
-
-    if (replies.length > 0 || spoileredReplies.length > 0) {
-        message.suppressEmbeds().catch(error => console.log(error.message));
     }
 
     for (const group of [replies, spoileredReplies]) {
